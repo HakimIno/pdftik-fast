@@ -1,0 +1,17 @@
+{
+    "name": "pdftik-fast",
+    "version": "1.0.0",
+    "main": "index.js",
+    "scripts": {
+        "install": "zig build",
+        "test": "node tests/test.js"
+    },
+    "dependencies": {
+        "ffi-napi": "^4.0.3",
+        "ref-napi": "^2.0.0"
+    },
+    "devDependencies": {
+        "node-api-headers": "^1.0.0",
+        "node-addon-api": "^7.0.0"
+    }
+}
