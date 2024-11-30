@@ -1,76 +1,53 @@
 const std = @import("std");
-const lib = @import("src/main.zig");
-const ws = @import("src/ws.zig");
-const base64 = std.base64;
+const ChildProcess = std.process.Child;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+    const allocator = std.heap.page_allocator;
 
-    var ws_client = try ws.WebSocket.init(
+    // Get current working directory
+    var buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+    const cwd = try std.process.getCwd(&buf);
+
+    // สร้าง absolute path สำหรับ HTML file
+    const html_path = try std.fmt.allocPrint(
         allocator,
-        "ws://localhost:9222/devtools/page/46E726C80917B2FDDE01383F44BC9B11"
+        "file://{s}/products.html",
+        .{cwd}
     );
-    defer ws_client.deinit();
+    defer allocator.free(html_path);
 
-    // 1. Navigate to URL
-    const navigate_command = "{\"id\":1,\"method\":\"Page.navigate\",\"params\":{\"url\":\"https://example.com\"}}";
-    try ws_client.vtable.sendFn(ws_client.ptr, navigate_command);
+    // สร้าง arguments สำหรับ Chrome
+    var args = std.ArrayList([]const u8).init(allocator);
+    defer args.deinit();
 
-    while (true) {
-        const response = try ws_client.vtable.receiveFn(ws_client.ptr);
-        defer allocator.free(response);
-        std.debug.print("Navigate Response: {s}\n", .{response});
-        if (std.mem.indexOf(u8, response, "\"id\":1") != null) break;
-    }
+    try args.append("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+    try args.append("--headless");
+    try args.append("--disable-gpu");
+    try args.append("--print-to-pdf=output.pdf");
+    try args.append(html_path);
 
-    // 2. รอให้หน้าเว็บโหลดเสร็จ
-    std.time.sleep(2 * std.time.ns_per_s);
+    std.debug.print("Converting HTML to PDF...\n", .{});
+    std.debug.print("HTML path: {s}\n", .{html_path});
 
-    // 3. สั่งพิมพ์เป็น PDF
-    const print_command = 
-        \\{"id":2,"method":"Page.printToPDF","params":{
-        \\  "landscape": false,
-        \\  "printBackground": true,
-        \\  "marginTop": 0,
-        \\  "marginBottom": 0,
-        \\  "marginLeft": 0,
-        \\  "marginRight": 0
-        \\}}
-    ;
-    try ws_client.vtable.sendFn(ws_client.ptr, print_command);
+    // สร้าง child process
+    var process = ChildProcess.init(args.items, allocator);
+    process.stderr_behavior = .Pipe;
+    process.stdout_behavior = .Pipe;
 
-    // 4. รับ PDF data และบันทึกลงไฟล์
-    while (true) {
-        const response = try ws_client.vtable.receiveFn(ws_client.ptr);
-        defer allocator.free(response);
-        
-        if (std.mem.indexOf(u8, response, "\"id\":2") != null) {
-            // หา base64 string
-            const data_start = std.mem.indexOf(u8, response, "\"data\":\"") orelse continue;
-            const base64_start = data_start + 8;
-            const base64_end = response.len - 3;
-            const base64_data = response[base64_start..base64_end];
+    // รัน process
+    try process.spawn();
 
-            // สร้าง decoder
-            const decoder = base64.standard.Decoder;
-            
-            // สร้าง buffer สำหรับเก็บ PDF
-            const pdf_size = try decoder.calcSizeForSlice(base64_data);
-            const pdf_data = try allocator.alloc(u8, pdf_size);
-            defer allocator.free(pdf_data);
-            
-            // decode base64
-            try decoder.decode(pdf_data, base64_data);
+    // รอให้ทำงานเสร็จ
+    const term = try process.wait();
 
-            // บันทึกไฟล์
-            const file = try std.fs.cwd().createFile("output.pdf", .{});
-            defer file.close();
-            try file.writeAll(pdf_data);
-            
-            std.debug.print("Saved PDF to output.pdf\n", .{});
-            break;
+    if (term != .Exited or term.Exited != 0) {
+        if (process.stderr) |stderr| {
+            const err_msg = try stderr.reader().readAllAlloc(allocator, 1024);
+            defer allocator.free(err_msg);
+            std.debug.print("Error: {s}\n", .{err_msg});
         }
+        return error.ChromeError;
     }
+
+    std.debug.print("PDF created successfully at: output.pdf\n", .{});
 }
